@@ -1,0 +1,307 @@
+diff --git a/src/brave/crawl.ts b/src/brave/crawl.ts
+index 89b2563..42918ff 100644
+--- a/src/brave/crawl.ts
++++ b/src/brave/crawl.ts
+@@ -1,16 +1,28 @@
+ 'use strict'
+ 
+ import * as osLib from 'os'
++import * as fs from 'fs';
+ 
+ import fsExtraLib from 'fs-extra'
+ import pathLib from 'path'
+ import Xvbf from 'xvfb'
+ 
+-import { getLogger } from './debug.js'
++import url_parse from 'url';
++
++import { getLogger, getLoggerForLevel } from './debug.js'
+ import { puppeteerConfigForArgs, launchWithRetry } from './puppeteer.js'
+ 
++
++let apiTraces: any = [];
++let apiResults = new Map();
++let StacktraceCache = new Map();
++
+ const xvfbPlatforms = new Set(['linux', 'openbsd'])
+ 
++function wait(ms: number) {
++  return new Promise(resolve => setTimeout(resolve, ms));
++}
++
+ const setupEnv = (args: CrawlArgs): EnvHandle => {
+   const logger = getLogger(args)
+   const platformName = osLib.platform()
+@@ -26,10 +38,47 @@ const setupEnv = (args: CrawlArgs): EnvHandle => {
+       // ensure 24-bit color depth or rendering might choke
+       xvfb_args: ['-screen', '0', '1024x768x24']
+     })
+-    xvfbHandle.startSync()
++
++    const maxRetries = 3;
++
++    // Start Xvfb ensuring three retries on errors
++    let attempt = 0;
++    logger.debug('Starting Xvfb')
++    while(attempt < maxRetries) {
++      try {
++        xvfbHandle.startSync()
++        logger.debug('Xvfb started successfully');
++        break; // Exit the loop if startSync is successful
++      } catch (error) {
++        attempt++;
++        logger.debug(`Error starting Xvfb, attempt ${attempt}: ${error}`);
++	if (attempt >= maxRetries) {
++          throw new Error('Failed to start Xvfb after maximum retries');
++        } else {
++	    wait(1000);
++	}
++      }
++    }
++
+     closeFunc = () => {
+       logger.debug('Tearing down Xvfb')
+-      xvfbHandle.stopSync()
++
++      attempt = 0;
++      while(attempt < maxRetries) {
++        try {
++          xvfbHandle.stopSync()
++          logger.debug('Xvfb stopped successfully');
++          break; // Exit the loop if startSync is successful
++        } catch (error) {
++          attempt++;
++          logger.debug(`Error stopping Xvfb, attempt ${attempt}: ${error}`);
++  	  if (attempt >= maxRetries) {
++            throw new Error('Failed to stop Xvfb after maximum retries');
++          } else {
++	    wait(1000);
++  	  }
++        }
++      }
+     }
+   } else {
+     logger.debug(`Running on ${platformName}, Xvfb not supported`)
+@@ -83,15 +132,23 @@ export const doCrawl = async (args: CrawlArgs,redirectChain: Url[] = []): Promis
+     try {
+       // create new page, update UA if needed, navigate to target URL, and wait for idle time
+       const page = await browser.newPage()
+-      const client = await page.target().createCDPSession()
++      const client = await page.target().createCDPSession();
+       client.on('Target.targetCrashed', (event: TargetCrashedEvent) => {
+         logger.debug(`ERROR Target.targetCrashed { targetId: ${event.targetId}, status: "${event.status}", errorCode: ${event.errorCode} }`)
+         throw new Error(event.status)
+       })
+ 
+-      if (args.userAgent) {
+-        await page.setUserAgent(args.userAgent)
+-      }
++
++      client.send("Debugger.enable")
++      client.send("Network.enable")
++      client.send("Runtime.enable")
++
++      await page.setBypassCSP(true)
++      // Intercept Battery API calls and log them
++      // const preloadFile = fs.readFileSync('/home/ubuntu/hwpg/src/pagegraph-crawl/src/brave/apihook_basic.js', 'utf8');
++      // await page.evaluateOnNewDocument(preloadFile);
++
++
+ 
+       await page.setRequestInterception(true)
+       // First load is not a navigation redirect, so we need to skip it.
+@@ -113,7 +170,29 @@ export const doCrawl = async (args: CrawlArgs,redirectChain: Url[] = []): Promis
+         }
+         firstLoad = false
+         request.continue()
+-      })
++      })      
++
++      // SMURF
++      client.on("Runtime.consoleAPICalled", (params: any) => {
++        if (params.type != "log" || params.args.length == 0 || params.args[0].type != "string") {
++            return;
++        }
++
++        let message = params.args[0].value;
++        if (params.stackTrace && message && message.startsWith("[SMURF]")) {
++            let to_parse = message.substr(7);
++            let parsed = JSON.parse(to_parse);
++            parsed.stackTrace = params.stackTrace;
++            logger.debug("TESTTEST:" + JSON.stringify(parsed))
++            apiTraces.push(parsed);
++        }
++      });
++
++      if (args.userAgent) {
++        await page.setUserAgent(args.userAgent)
++      }
++
++
+ 
+       logger.debug(`Navigating to ${url}`)
+       await page.goto(url, { waitUntil: 'load' })
+@@ -123,6 +202,13 @@ export const doCrawl = async (args: CrawlArgs,redirectChain: Url[] = []): Promis
+       if (depth > 1) {
+         randomChildUrl = await getRandomLinkFromPage(page, logger)
+       }
++
++      // SMURF
++      logger.debug('Processing API')
++      let hostname = url_parse.parse(page.url()).hostname;
++      await processApis(logger, hostname, client);
++      // END SMURF
++
+       logger.debug('Closing page')
+       await page.close()
+     } catch (err) {
+@@ -185,3 +271,150 @@ const getRandomLinkFromPage = async (page: any, logger: Logger) : Promise<Url> /
+   const randomLink = links[Math.floor(Math.random() * links.length)]
+   return randomLink
+ }
++
++
++/*
++ * SMURF
++ */
++
++async function flattenStack(stack: any, client: any) {
++  let cf = [];
++  do {
++      for (let frame of stack.callFrames) {
++          cf.push(frame);
++      }
++      if (stack.parentId) {
++          let id = stack.parentId.id;
++          if (StacktraceCache.has(id)) {
++              stack = StacktraceCache.get(id);
++          }
++          else {
++              stack = await client.send('Debugger.getStackTrace', {stackTraceId: stack.parentId}).catch();
++              StacktraceCache.set(id, stack);
++          }
++
++          if (stack)
++              stack = stack.stackTrace;
++      }
++      else {
++          stack = stack.parent;
++      }
++  } while (stack !== undefined);
++  return cf;
++}
++
++/*
++function cleanOurSids(stack: any) {
++    let cf = [];
++    for (let frame of stack) {
++        if (!ourInjectedSids.has(frame.scriptId)) {
++            cf.push(frame);
++        }
++    }
++    return cf
++}
++function getStos(frames: any) {
++    // this may happen over cleaned stacktraces when we produce an api trace
++    if (frames.length === 0) {
++        return
++    }
++    for (let i = frames.length - 1; i >= 0; i--) {
++        let frame = frames[i];
++        let script = seenScripts.get(frame.scriptId);
++        if (script && script.url && libUrlHashes.has(script.url_hash)) {
++            continue
++        }
++        return script;
++    }
++    if (seenScripts.has(frames[frames.length - 1].scriptId)) {
++        return seenScripts.get(frames[frames.length - 1].scriptId);
++    }
++    return undefined
++}
++
++
++async function findAssociatedExternalScript(script){
++    let cur_script = script;
++    while(!cur_script.url && !cur_script.url.startsWith('http')){
++        // resolve parent
++        let trace = findTrace(cur_script);
++        if (trace) {
++            let flatten = await flattenStack(trace);
++            let cleaned = await cleanOurSids(flatten);
++            let stos = await getStos(cleaned);
++            if (stos === undefined) {
++                return;
++            }
++            cur_script = stos;
++        }else{
++            return;
++        }
++    }
++    // returns the identity if the input script was already an external one
++    return cur_script;
++}
++
++function findTrace(script) {
++  //The order is important, custom overrides dynamic
++  if (customTraces.has(script.hash)) {
++      return customTraces.get(script.hash);
++  }
++  else if (script.url && networkTraces.has(script.url)) {
++      return networkTraces.get(script.url);
++  }
++  else if (debuggerTraces.has(script.id)) {
++      return debuggerTraces.get(script.id);
++  }
++  return null;
++}
++
++*/
++
++async function processApis(logger: Logger, hostname: string | null, client: any) {
++
++  logger.debug("== PROCESS APIS ==")
++  let length = apiTraces.length;
++
++  for (let i = 0; i < length; i++) {
++    let api = apiTraces[i];
++    let flattened = await flattenStack(api.stackTrace, client);
++        
++    if (api.tag == "inline_handler") {
++      logger.debug(JSON.stringify(flattened))
++    }
++
++    /*
++    // let cleaned = await cleanOurSids(flattened);
++    let cleaned = flattened
++
++    let stos = getStos(cleaned);
++    if (!stos) {
++        continue;
++    }
++
++    // default to the loaded page if we cannot find another intermediate parent
++    let host = hostname;
++
++    let associatedExternal = await findAssociatedExternalScript(stos);
++    if (associatedExternal){
++        host = url_parse.parse(associatedExternal.url).hostname;
++    }
++
++    if (apiResults.has(host)) {
++        apiResults.get(host).add(api.tag);
++    } else {
++        apiResults.set(host, (new Set()).add(api.tag))
++    }
++    */
++  }
++
++  /*
++  for (let host of apiResults.keys()){
++    if (apiResults.get(host).has('inline_handler')){
++        logger.debug("Inline Handler in: " + host)
++    }
++  }
++  */
++  logger.debug("== END PROCESS APIS ==")
++}

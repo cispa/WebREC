@@ -1,0 +1,4 @@
+google-cloud-bigquery
+git+https://github.com/internetarchive/warcprox.git
+mitmproxy
+tqdm

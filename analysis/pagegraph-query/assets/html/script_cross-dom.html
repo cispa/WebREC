@@ -1,0 +1,11 @@
+<body>
+  <script>
+    const frameElm = document.createElement('iframe')
+    frameElm.src = 'about:blank'
+    document.body.appendChild(frameElm)
+
+    const pElm = document.createElement('p')
+    pElm.innerText = 'hi'
+    frameElm.contentDocument.body.appendChild(pElm)
+  </script>
+</body>

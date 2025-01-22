@@ -1,0 +1,63 @@
+<head>
+   <!-- <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'nonce-rAnd0m'"> -->
+</head>
+<body>
+    <div onclick="console.log('div_inline')">My test div</div>
+    <iframe
+        onload="console.log('iframe_inline')"
+        srcdoc="<div onmouseover='console.log(`iframe_div_inline`)'>foo</div>"
+    ></iframe>
+
+    <p id="my-par">Paragraph</p>
+  
+    <a id="my-a" onclick="console.log(1)">test</a>
+
+
+    <!-- The following is not a valid event listeners as the function misses an identifier -->
+    <script src="x" onerror="function() {console.log('invalid listener')}" async="true"></script>
+
+    <script nonce='rAnd0m'>
+
+        window.addEventListener("onload", () => console.log("window_prog_load"));
+
+        const parElm = document.getElementById("my-par")
+        parElm.setAttribute("onclick", "console.log('div_inline_2')")
+        parElm.onblur = () => console.log("div_prog_blur")
+        parElm.addEventListener("mouseover", () => console.log("div_prog_mouseover"))
+
+        // Allowed with CSP
+        imgElm1 = document.createElement("img")
+        imgElm1.src = "x"
+        imgElm1.onload = () => console.log("img_prog_1")
+        imgElm1.onerror = () => console.log("img_prog_2")
+
+        // Not allowed with CSP
+        imgElm2 = document.createElement("img")
+        imgElm2.setAttribute("onload", "console.log('img_inline_3')")
+        imgElm2.setAttribute("onerror", "console.log('img_inline_4')")
+        imgElm2.setAttribute("src", "y")
+
+        // Elemnt added to DOM
+        divElm2 = document.createElement("div")
+        divElm2.setAttribute("onclick", "console.log('div_inline_click_elem2')")
+        document.body.append(divElm2)
+        
+        // Elemnt not added to DOM
+        divElm3 = document.createElement("div")
+        divElm3.setAttribute("onclick", "console.log('div_inline_click_elem3')")        
+
+        // Element nested added to DOM and not added
+        divElm4 = document.createElement("div")
+        divElm5 = document.createElement("div")
+        aElm6 = document.createElement("a")
+        aElm6.setAttribute("onclick", "console.log('a_inline_elem6')")
+        divElm4.append(aElm6)
+        divElm5.append(aElm6)
+
+        document.body.append(divElm4)
+
+        // Sehen wir hier einen zweiten event listener? 
+        const aElm = document.getElementById("my-a")
+        parElm.appendChild(aElm)
+    </script>
+</body>
