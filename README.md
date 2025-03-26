@@ -3,6 +3,7 @@ This project provides a framework for crawling websites using Brave's [pagegraph
 
 This code is used in the paper "Web Execution Bundles: Reproducible, Accurate, and Archivable Web Measurements".
 
+All relevant detailed steps to run the pipeline are also described in the [AE PDF](PageGraph_Analyses_AE.pdf).
 
 ## Requirements
 * Python 3.x

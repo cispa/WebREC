@@ -175,7 +175,7 @@ def start_pagegraph(port_mitmd: int, brave_exec_path: str, output_path: str, ori
     log_dir = os.path.join(output_path, "logs")
     logfile_pagegraph = open(os.path.join(log_dir, "pagegraph.log"), "a")
 
-    print("Run Brave now: " + brave_exec_path)
+    print("Running Brave now: " + brave_exec_path)
     pg_crawl_cmds = [
         "npm", "run", "crawl", "--", "-b", brave_exec_path, "-u", origin,
         "-t","10", "-o", pagegraph_dir,

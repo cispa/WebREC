@@ -1,4 +1,5 @@
 google-cloud-bigquery
-git+https://github.com/internetarchive/warcprox.git
-mitmproxy
-tqdm
+setuptools
+git+https://github.com/FHantke/warcprox.git@ssl-wrap-socket-fix
+mitmproxy==10.2.3
+tqdm==4.67.1
